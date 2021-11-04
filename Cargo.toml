@@ -10,12 +10,12 @@ edition = "2018"
 [dependencies]
 blake2 = "0.8"
 digest = { version = "0.8", features = ["std"] }
-byteorder = { version = "1.4", features = ["i128"] }
+byteorder = { version = "1", features = ["i128"] }
 num-traits = "0.2"
 num-bigint = "0.4"
-serde = "1.0.130"
-serde_derive = "1.0.130"
-hex = "0.4.3"
+serde = "1"
+serde_derive = "1"
+hex = "0.4"
 curve25519-dalek = { version = "3.2", features = ["serde"] }
 # Needed for thread_rng for ed25519-dalek
 rand = { version = "0.7", features = ["std"] }
