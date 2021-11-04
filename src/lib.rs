@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::convert::AsRef;
+use std::convert::{AsRef, TryInto};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter;
@@ -7,7 +7,7 @@ use std::str;
 use std::str::FromStr;
 
 extern crate blake2;
-use blake2::{Blake2b, VarBlake2b};
+use blake2::VarBlake2b;
 extern crate digest;
 use digest::{Input, VariableOutput};
 
@@ -19,9 +19,8 @@ use num_bigint::BigInt;
 extern crate num_traits;
 use num_traits::cast::ToPrimitive;
 
-extern crate ed25519_dalek;
-use ed25519_dalek::PublicKey;
-pub use ed25519_dalek::Signature;
+extern crate curve25519_dalek;
+use curve25519_dalek::{scalar::Scalar, edwards::{EdwardsPoint, CompressedEdwardsY}};
 
 extern crate hex;
 
@@ -51,6 +50,38 @@ macro_rules! zero_v6_addr {
     () => {
         ::std::net::SocketAddrV6::new(::std::net::Ipv6Addr::from([0u8; 16]), 0, 0, 0)
     };
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Signature {
+  R: EdwardsPoint,
+  s: Scalar
+}
+
+impl Signature {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut res = self.R.compress().to_bytes().to_vec();
+        res.extend(self.s.to_bytes());
+        res
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> std::io::Result<Signature> {
+        if bytes.len() != 64 {
+            Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid length"))
+        } else {
+            Ok(
+                Signature {
+                    R: CompressedEdwardsY(
+                        bytes[..32].try_into().expect("Signature was correct length yet didn't have a 32-byte point")
+                    ).decompress().ok_or(std::io::ErrorKind::InvalidData)?,
+                    s: Scalar::from_bytes_mod_order(bytes[32..].try_into().expect(
+                        "Signature was correct length yet didn't have a 32-byte scalar"
+                    ))
+                }
+            )
+        }
+    }
 }
 
 fn write_hex(f: &mut fmt::Formatter, bytes: &[u8]) -> fmt::Result {
@@ -227,8 +258,8 @@ pub const ACCOUNT_LOOKUP: &[u8] = b"13456789abcdefghijkmnopqrstuwxyz";
 pub struct Account(pub [u8; 32]);
 
 impl Account {
-    pub fn as_pubkey(&self) -> PublicKey {
-        PublicKey::from_bytes(&self.0).unwrap()
+    pub fn as_pubkey(&self) -> EdwardsPoint {
+        CompressedEdwardsY(self.0).decompress().unwrap()
     }
 }
 
@@ -261,8 +292,8 @@ impl fmt::Display for Account {
     }
 }
 
-impl Into<PublicKey> for Account {
-    fn into(self) -> PublicKey {
+impl Into<EdwardsPoint> for Account {
+    fn into(self) -> EdwardsPoint {
         self.as_pubkey()
     }
 }
@@ -812,6 +843,22 @@ impl Hash for Vote {
     }
 }
 
+pub fn verify_signature(
+    pubkey: EdwardsPoint,
+    message: &[u8],
+    signature: &Signature
+) -> bool {
+    let mut hasher = VarBlake2b::new(64).unwrap();
+    hasher.input(&signature.R.compress().to_bytes());
+    hasher.input(&pubkey.compress().to_bytes());
+    hasher.input(message);
+    let mut output = [0; 64];
+    hasher.variable_result(|b| output.copy_from_slice(b));
+    #[allow(non_snake_case)]
+    let HRAM: Scalar = Scalar::from_bytes_mod_order_wide(&output);
+    signature.R == EdwardsPoint::vartime_double_scalar_mul_basepoint(&HRAM, &-pubkey, &signature.s)
+}
+
 impl Vote {
     pub fn get_hash(&self) -> [u8; 32] {
         let mut hasher = VarBlake2b::new(32).expect("Unsupported hash length");
@@ -822,9 +869,6 @@ impl Vote {
     }
 
     pub fn verify(&self) -> bool {
-        self.account
-            .as_pubkey()
-            .verify::<Blake2b>(&self.get_hash(), &self.signature)
-            .is_ok()
+        verify_signature(self.account.as_pubkey(), &self.get_hash(), &self.signature)
     }
 }
